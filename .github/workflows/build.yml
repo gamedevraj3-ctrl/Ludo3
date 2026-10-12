@@ -24,7 +24,7 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Extract source zip (agar repo me sirf zip hai)
+      - name: Extract source zip
         run: |
           Z=$(find . -maxdepth 2 -name "*.zip" | head -n 1)
           if [ -n "$Z" ] && [ ! -f pubspec.yaml ]; then
@@ -44,10 +44,82 @@ jobs:
           DIR=$(dirname "$P")
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
           echo "Project folder: $DIR"
-          mkdir -p "$DIR/assets/characters"
-          echo "Character PNGs count: $(find "$DIR/assets/characters" -name '*.png' 2>/dev/null | wc -l)"
 
-      - name: Fix Android Gradle / AGP / Kotlin for Flutter stable 3.47+
+      - name: Ensure asset folders + placeholders (characters/sfx/ui deleted on upload)
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          mkdir -p assets/characters assets/sfx assets/ui
+          python3 << 'PY'
+          import os, struct, wave, zlib
+
+          def write_silent_wav(path, ms=80):
+              sr = 22050
+              n = max(1, int(sr * ms / 1000))
+              os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+              with wave.open(path, "w") as w:
+                  w.setnchannels(1)
+                  w.setsampwidth(2)
+                  w.setframerate(sr)
+                  w.writeframes(b"\x00\x00" * n)
+
+          def write_png(path, w=8, h=8):
+              # 1x1 transparent-ish dark PNG (8x8 RGBA)
+              def chunk(tag, data):
+                  return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
+              raw = b""
+              for y in range(h):
+                  raw += b"\x00" + (b"\x00\x00\x00\x00" * w)
+              ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
+              png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+              os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+              open(path, "wb").write(png)
+
+          sfx = [
+              "cut","dice_roll","dice_six","extra_turn","forfeit","home","hop",
+              "lose","match_start","miss","no_move","tap","token_open","ui_click","win",
+          ]
+          for name in sfx:
+              path = f"assets/sfx/{name}.wav"
+              if not os.path.isfile(path) or os.path.getsize(path) < 44:
+                  write_silent_wav(path)
+                  print("sfx placeholder", path)
+
+          ui = ["booyah_logo.png","ff_lobby_bg.jpg","lobby_bg.png","rank_crest.png",
+                "ff_loading_bg.jpg","ff_login_bg.jpg","ff_hero_bg.jpg"]
+          for name in ui:
+              path = f"assets/ui/{name}"
+              if not os.path.isfile(path):
+                  # jpg/png both as png bytes is ok for missing fallback sizes; Flutter loads by path
+                  if name.endswith(".jpg"):
+                      # minimal JPEG (1x1)
+                      jpg = bytes([
+                          0xFF,0xD8,0xFF,0xE0,0x00,0x10,0x4A,0x46,0x49,0x46,0x00,0x01,0x01,0x00,0x00,0x01,
+                          0x00,0x01,0x00,0x00,0xFF,0xDB,0x00,0x43,0x00,0x08,0x06,0x06,0x07,0x06,0x05,0x08,
+                          0x07,0x07,0x07,0x09,0x09,0x08,0x0A,0x0C,0x14,0x0D,0x0C,0x0B,0x0B,0x0C,0x19,0x12,
+                          0x13,0x0F,0x14,0x1D,0x1A,0x1F,0x1E,0x1D,0x1A,0x1C,0x1C,0x20,0x24,0x2E,0x27,0x20,
+                          0x22,0x2C,0x23,0x1C,0x1C,0x28,0x37,0x29,0x2C,0x30,0x31,0x34,0x34,0x34,0x1F,0x27,
+                          0x39,0x3D,0x38,0x32,0x3C,0x2E,0x33,0x34,0x32,0xFF,0xC0,0x00,0x0B,0x08,0x00,0x01,
+                          0x00,0x01,0x01,0x01,0x11,0x00,0xFF,0xC4,0x00,0x14,0x00,0x01,0x00,0x00,0x00,0x00,
+                          0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x08,0xFF,0xC4,0x00,0x14,
+                          0x10,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                          0x00,0x00,0xFF,0xDA,0x00,0x08,0x01,0x01,0x00,0x00,0x3F,0x00,0x7F,0xFF,0xD9
+                      ])
+                      open(path, "wb").write(jpg)
+                  else:
+                      write_png(path, 16, 16)
+                  print("ui placeholder", path)
+
+          # one dummy character so folder is non-empty
+          if not any(f.endswith(".png") for f in os.listdir("assets/characters") if os.path.isfile(os.path.join("assets/characters", f))):
+              write_png("assets/characters/Rin.png", 64, 128)
+              print("character placeholder Rin.png")
+
+          print("Asset check:")
+          for d in ["assets/sfx", "assets/ui", "assets/characters"]:
+              print(d, len(os.listdir(d)) if os.path.isdir(d) else 0)
+          PY
+
+      - name: Fix Android Gradle / AGP / Kotlin for Flutter stable
         working-directory: ${{ steps.proj.outputs.dir }}/android
         run: |
           if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
@@ -73,7 +145,7 @@ jobs:
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           APK_DIR=build/app/outputs/flutter-apk
-          ls -lh "$APK_DIR"
+          ls -lh "$APK_DIR" || true
           APK="$APK_DIR/app-arm64-v8a-release.apk"
           if [ ! -f "$APK" ]; then
             APK="$APK_DIR/app-release.apk"
@@ -94,16 +166,17 @@ jobs:
           name: ludo-rush-apk
           path: LudoRush.apk
 
-      - name: Publish GitHub Release (direct APK download)
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.${{ github.run_number }}
           name: Ludo Rush APK v1.0.${{ github.run_number }}
           body: |
             arm64-v8a release (Ludo3).
-            Install **LudoRush.apk** directly.
-            Characters baad me MT Manager se:
+            Characters / SFX / UI baad me MT Manager se import:
             `assets/flutter_assets/assets/characters/`
+            `assets/flutter_assets/assets/sfx/`
+            `assets/flutter_assets/assets/ui/`
           files: LudoRush.apk
           make_latest: true
         env:
