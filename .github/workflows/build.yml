@@ -45,6 +45,91 @@ jobs:
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
           echo "Project folder: $DIR"
 
+      - name: Fix lobby _pngDot compile error (if missing method)
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          python3 << 'PY'
+          from pathlib import Path
+          p = Path("lib/screens/lobby_screen.dart")
+          if not p.exists():
+              print("lobby_screen.dart missing — skip")
+              raise SystemExit(0)
+          t = p.read_text()
+          if "Widget _pngDot" in t:
+              print("_pngDot already defined")
+              raise SystemExit(0)
+          if "_pngDot(" not in t:
+              print("no _pngDot call — skip")
+              raise SystemExit(0)
+          # Prefer inserting the method; fallback: replace call with Icon settings
+          needle = """  Widget _dot({required IconData icon, required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 30,
+        height: 30,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.38),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(icon, size: 15, color: Colors.white),
+      ),
+    );
+  }
+}
+"""
+          insert = """  Widget _dot({required IconData icon, required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 30,
+        height: 30,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.38),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(icon, size: 15, color: Colors.white),
+      ),
+    );
+  }
+
+  Widget _pngDot({required String asset, required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 30,
+        height: 30,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.38),
+          shape: BoxShape.circle,
+        ),
+        padding: const EdgeInsets.all(5),
+        child: Image.asset(
+          asset,
+          fit: BoxFit.contain,
+          errorBuilder: (_, __, ___) =>
+              const Icon(Icons.settings_rounded, size: 15, color: Colors.white),
+        ),
+      ),
+    );
+  }
+}
+"""
+          if needle in t:
+              p.write_text(t.replace(needle, insert, 1))
+              print("inserted Widget _pngDot method")
+          else:
+              t2 = t.replace(
+                  "_pngDot(asset: 'assets/ui/icon_setting.png', onTap: onSettings)",
+                  "_dot(icon: Icons.settings_rounded, onTap: onSettings)",
+              )
+              if t2 == t:
+                  print("could not patch lobby_screen")
+                  raise SystemExit(1)
+              p.write_text(t2)
+              print("fallback: _pngDot call -> _dot(settings)")
+          PY
+
       - name: Ensure asset folders + placeholders (characters/sfx/ui deleted on upload)
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
@@ -63,7 +148,6 @@ jobs:
                   w.writeframes(b"\x00\x00" * n)
 
           def write_png(path, w=8, h=8):
-              # 1x1 transparent-ish dark PNG (8x8 RGBA)
               def chunk(tag, data):
                   return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
               raw = b""
@@ -73,6 +157,21 @@ jobs:
               png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
               os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
               open(path, "wb").write(png)
+
+          def write_jpg(path):
+              jpg = bytes([
+                  0xFF,0xD8,0xFF,0xE0,0x00,0x10,0x4A,0x46,0x49,0x46,0x00,0x01,0x01,0x00,0x00,0x01,
+                  0x00,0x01,0x00,0x00,0xFF,0xDB,0x00,0x43,0x00,0x08,0x06,0x06,0x07,0x06,0x05,0x08,
+                  0x07,0x07,0x07,0x09,0x09,0x08,0x0A,0x0C,0x14,0x0D,0x0C,0x0B,0x0B,0x0C,0x19,0x12,
+                  0x13,0x0F,0x14,0x1D,0x1A,0x1F,0x1E,0x1D,0x1A,0x1C,0x1C,0x20,0x24,0x2E,0x27,0x20,
+                  0x22,0x2C,0x23,0x1C,0x1C,0x28,0x37,0x29,0x2C,0x30,0x31,0x34,0x34,0x34,0x1F,0x27,
+                  0x39,0x3D,0x38,0x32,0x3C,0x2E,0x33,0x34,0x32,0xFF,0xC0,0x00,0x0B,0x08,0x00,0x01,
+                  0x00,0x01,0x01,0x01,0x11,0x00,0xFF,0xC4,0x00,0x14,0x00,0x01,0x00,0x00,0x00,0x00,
+                  0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x08,0xFF,0xC4,0x00,0x14,
+                  0x10,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                  0x00,0x00,0xFF,0xDA,0x00,0x08,0x01,0x01,0x00,0x00,0x3F,0x00,0x7F,0xFF,0xD9
+              ])
+              open(path, "wb").write(jpg)
 
           sfx = [
               "cut","dice_roll","dice_six","extra_turn","forfeit","home","hop",
@@ -84,34 +183,26 @@ jobs:
                   write_silent_wav(path)
                   print("sfx placeholder", path)
 
-          ui = ["booyah_logo.png","ff_lobby_bg.jpg","lobby_bg.png","rank_crest.png",
-                "ff_loading_bg.jpg","ff_login_bg.jpg","ff_hero_bg.jpg"]
+          ui = [
+              "booyah_logo.png","ff_lobby_bg.jpg","lobby_bg.png","rank_crest.png",
+              "ff_loading_bg.jpg","ff_login_bg.jpg","ff_hero_bg.jpg","garena_logo.png",
+              "icon_setting.png","icon_mail.png","icon_store.png","icon_close.png",
+              "profile_stats_bg.png",
+          ]
           for name in ui:
               path = f"assets/ui/{name}"
               if not os.path.isfile(path):
-                  # jpg/png both as png bytes is ok for missing fallback sizes; Flutter loads by path
                   if name.endswith(".jpg"):
-                      # minimal JPEG (1x1)
-                      jpg = bytes([
-                          0xFF,0xD8,0xFF,0xE0,0x00,0x10,0x4A,0x46,0x49,0x46,0x00,0x01,0x01,0x00,0x00,0x01,
-                          0x00,0x01,0x00,0x00,0xFF,0xDB,0x00,0x43,0x00,0x08,0x06,0x06,0x07,0x06,0x05,0x08,
-                          0x07,0x07,0x07,0x09,0x09,0x08,0x0A,0x0C,0x14,0x0D,0x0C,0x0B,0x0B,0x0C,0x19,0x12,
-                          0x13,0x0F,0x14,0x1D,0x1A,0x1F,0x1E,0x1D,0x1A,0x1C,0x1C,0x20,0x24,0x2E,0x27,0x20,
-                          0x22,0x2C,0x23,0x1C,0x1C,0x28,0x37,0x29,0x2C,0x30,0x31,0x34,0x34,0x34,0x1F,0x27,
-                          0x39,0x3D,0x38,0x32,0x3C,0x2E,0x33,0x34,0x32,0xFF,0xC0,0x00,0x0B,0x08,0x00,0x01,
-                          0x00,0x01,0x01,0x01,0x11,0x00,0xFF,0xC4,0x00,0x14,0x00,0x01,0x00,0x00,0x00,0x00,
-                          0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x08,0xFF,0xC4,0x00,0x14,
-                          0x10,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-                          0x00,0x00,0xFF,0xDA,0x00,0x08,0x01,0x01,0x00,0x00,0x3F,0x00,0x7F,0xFF,0xD9
-                      ])
-                      open(path, "wb").write(jpg)
+                      write_jpg(path)
                   else:
                       write_png(path, 16, 16)
                   print("ui placeholder", path)
 
-          # one dummy character so folder is non-empty
-          if not any(f.endswith(".png") for f in os.listdir("assets/characters") if os.path.isfile(os.path.join("assets/characters", f))):
-              write_png("assets/characters/Rin.png", 64, 128)
+          chars_dir = "assets/characters"
+          os.makedirs(chars_dir, exist_ok=True)
+          chars = [f for f in os.listdir(chars_dir) if f.endswith(".png")]
+          if not chars:
+              write_png(os.path.join(chars_dir, "Rin.png"), 64, 128)
               print("character placeholder Rin.png")
 
           print("Asset check:")
