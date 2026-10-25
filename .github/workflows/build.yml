@@ -26,6 +26,7 @@ jobs:
 
       - name: Extract source zip
         run: |
+          set -e
           Z=$(find . -maxdepth 2 -name "*.zip" | head -n 1)
           if [ -n "$Z" ] && [ ! -f pubspec.yaml ]; then
             echo "Extracting $Z ..."
@@ -35,9 +36,10 @@ jobs:
       - name: Find Flutter project folder
         id: proj
         run: |
+          set -e
           P=$(find . -maxdepth 4 -name pubspec.yaml -not -path "*/.*" | head -n 1)
           if [ -z "$P" ]; then
-            echo "pubspec.yaml nahi mili. Repo files:"
+            echo "pubspec.yaml missing"
             find . -maxdepth 3 -type f | head -80
             exit 1
           fi
@@ -45,182 +47,79 @@ jobs:
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
           echo "Project folder: $DIR"
 
-      - name: Fix lobby _pngDot compile error (if missing method)
+      - name: Fix missing _pngDot (compile error)
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
-          python3 << 'PY'
-          from pathlib import Path
-          p = Path("lib/screens/lobby_screen.dart")
-          if not p.exists():
-              print("lobby_screen.dart missing — skip")
-              raise SystemExit(0)
-          t = p.read_text()
-          if "Widget _pngDot" in t:
-              print("_pngDot already defined")
-              raise SystemExit(0)
-          if "_pngDot(" not in t:
-              print("no _pngDot call — skip")
-              raise SystemExit(0)
-          # Prefer inserting the method; fallback: replace call with Icon settings
-          needle = """  Widget _dot({required IconData icon, required VoidCallback onTap}) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 30,
-        height: 30,
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.38),
-          shape: BoxShape.circle,
-        ),
-        child: Icon(icon, size: 15, color: Colors.white),
-      ),
-    );
-  }
-}
-"""
-          insert = """  Widget _dot({required IconData icon, required VoidCallback onTap}) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 30,
-        height: 30,
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.38),
-          shape: BoxShape.circle,
-        ),
-        child: Icon(icon, size: 15, color: Colors.white),
-      ),
-    );
-  }
+          F=lib/screens/lobby_screen.dart
+          if [ -f "$F" ]; then
+            sed -i "s/_pngDot(asset: 'assets\/ui\/icon_setting.png', onTap: onSettings)/_dot(icon: Icons.settings_rounded, onTap: onSettings)/g" "$F"
+            grep -n "_pngDot\|_dot(icon: Icons.settings" "$F" | head -5 || true
+          else
+            echo "lobby_screen.dart not found"
+          fi
 
-  Widget _pngDot({required String asset, required VoidCallback onTap}) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 30,
-        height: 30,
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.38),
-          shape: BoxShape.circle,
-        ),
-        padding: const EdgeInsets.all(5),
-        child: Image.asset(
-          asset,
-          fit: BoxFit.contain,
-          errorBuilder: (_, __, ___) =>
-              const Icon(Icons.settings_rounded, size: 15, color: Colors.white),
-        ),
-      ),
-    );
-  }
-}
-"""
-          if needle in t:
-              p.write_text(t.replace(needle, insert, 1))
-              print("inserted Widget _pngDot method")
-          else:
-              t2 = t.replace(
-                  "_pngDot(asset: 'assets/ui/icon_setting.png', onTap: onSettings)",
-                  "_dot(icon: Icons.settings_rounded, onTap: onSettings)",
-              )
-              if t2 == t:
-                  print("could not patch lobby_screen")
-                  raise SystemExit(1)
-              p.write_text(t2)
-              print("fallback: _pngDot call -> _dot(settings)")
-          PY
-
-      - name: Ensure asset folders + placeholders (characters/sfx/ui deleted on upload)
+      - name: Placeholder assets (no characters/sfx/ui on upload)
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           mkdir -p assets/characters assets/sfx assets/ui
-          python3 << 'PY'
+          python3 - <<'PY'
           import os, struct, wave, zlib
 
-          def write_silent_wav(path, ms=80):
-              sr = 22050
-              n = max(1, int(sr * ms / 1000))
+          def wav(path, ms=80):
+              sr, n = 22050, max(1, int(22050 * ms / 1000))
               os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
               with wave.open(path, "w") as w:
-                  w.setnchannels(1)
-                  w.setsampwidth(2)
-                  w.setframerate(sr)
+                  w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
                   w.writeframes(b"\x00\x00" * n)
 
-          def write_png(path, w=8, h=8):
+          def png(path, w=16, h=16):
               def chunk(tag, data):
                   return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
-              raw = b""
-              for y in range(h):
-                  raw += b"\x00" + (b"\x00\x00\x00\x00" * w)
+              raw = b"".join(b"\x00" + (b"\x00\x00\x00\x00" * w) for _ in range(h))
               ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
-              png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+              data = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
               os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-              open(path, "wb").write(png)
+              open(path, "wb").write(data)
 
-          def write_jpg(path):
-              jpg = bytes([
-                  0xFF,0xD8,0xFF,0xE0,0x00,0x10,0x4A,0x46,0x49,0x46,0x00,0x01,0x01,0x00,0x00,0x01,
-                  0x00,0x01,0x00,0x00,0xFF,0xDB,0x00,0x43,0x00,0x08,0x06,0x06,0x07,0x06,0x05,0x08,
-                  0x07,0x07,0x07,0x09,0x09,0x08,0x0A,0x0C,0x14,0x0D,0x0C,0x0B,0x0B,0x0C,0x19,0x12,
-                  0x13,0x0F,0x14,0x1D,0x1A,0x1F,0x1E,0x1D,0x1A,0x1C,0x1C,0x20,0x24,0x2E,0x27,0x20,
-                  0x22,0x2C,0x23,0x1C,0x1C,0x28,0x37,0x29,0x2C,0x30,0x31,0x34,0x34,0x34,0x1F,0x27,
-                  0x39,0x3D,0x38,0x32,0x3C,0x2E,0x33,0x34,0x32,0xFF,0xC0,0x00,0x0B,0x08,0x00,0x01,
-                  0x00,0x01,0x01,0x01,0x11,0x00,0xFF,0xC4,0x00,0x14,0x00,0x01,0x00,0x00,0x00,0x00,
-                  0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x08,0xFF,0xC4,0x00,0x14,
-                  0x10,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-                  0x00,0x00,0xFF,0xDA,0x00,0x08,0x01,0x01,0x00,0x00,0x3F,0x00,0x7F,0xFF,0xD9
-              ])
-              open(path, "wb").write(jpg)
+          def jpg(path):
+              open(path, "wb").write(bytes.fromhex(
+                  "ffd8ffe000104a46494600010100000100010000ffdb004300080606070605080707"
+                  "070909080a0c140d0c0b0b0c1912130f141d1a1f1e1d1a1c1c20242e2720222c231c"
+                  "1c2837292c30313434341f27393d38323c2e333432ffc0000b080001000101011100"
+                  "ffc400140001000000000000000000000000000008ffc40014100100000000000000"
+                  "0000000000000000ffda0008010100003f007fffd9"
+              ))
 
-          sfx = [
-              "cut","dice_roll","dice_six","extra_turn","forfeit","home","hop",
-              "lose","match_start","miss","no_move","tap","token_open","ui_click","win",
-          ]
-          for name in sfx:
-              path = f"assets/sfx/{name}.wav"
-              if not os.path.isfile(path) or os.path.getsize(path) < 44:
-                  write_silent_wav(path)
-                  print("sfx placeholder", path)
+          for n in ["cut","dice_roll","dice_six","extra_turn","forfeit","home","hop","lose","match_start","miss","no_move","tap","token_open","ui_click","win"]:
+              p = f"assets/sfx/{n}.wav"
+              if not os.path.isfile(p) or os.path.getsize(p) < 44:
+                  wav(p)
 
-          ui = [
-              "booyah_logo.png","ff_lobby_bg.jpg","lobby_bg.png","rank_crest.png",
-              "ff_loading_bg.jpg","ff_login_bg.jpg","ff_hero_bg.jpg","garena_logo.png",
-              "icon_setting.png","icon_mail.png","icon_store.png","icon_close.png",
-              "profile_stats_bg.png",
-          ]
-          for name in ui:
-              path = f"assets/ui/{name}"
-              if not os.path.isfile(path):
-                  if name.endswith(".jpg"):
-                      write_jpg(path)
-                  else:
-                      write_png(path, 16, 16)
-                  print("ui placeholder", path)
+          for n in ["booyah_logo.png","lobby_bg.png","rank_crest.png","garena_logo.png","icon_setting.png","icon_mail.png","icon_store.png","icon_close.png","profile_stats_bg.png"]:
+              p = f"assets/ui/{n}"
+              if not os.path.isfile(p):
+                  png(p)
 
-          chars_dir = "assets/characters"
-          os.makedirs(chars_dir, exist_ok=True)
-          chars = [f for f in os.listdir(chars_dir) if f.endswith(".png")]
-          if not chars:
-              write_png(os.path.join(chars_dir, "Rin.png"), 64, 128)
-              print("character placeholder Rin.png")
+          for n in ["ff_lobby_bg.jpg","ff_loading_bg.jpg","ff_login_bg.jpg","ff_hero_bg.jpg"]:
+              p = f"assets/ui/{n}"
+              if not os.path.isfile(p):
+                  jpg(p)
 
-          print("Asset check:")
-          for d in ["assets/sfx", "assets/ui", "assets/characters"]:
-              print(d, len(os.listdir(d)) if os.path.isdir(d) else 0)
+          if not any(f.endswith(".png") for f in os.listdir("assets/characters")):
+              png("assets/characters/Rin.png", 64, 128)
+
+          print("sfx", len(os.listdir("assets/sfx")), "ui", len(os.listdir("assets/ui")), "chars", len(os.listdir("assets/characters")))
           PY
 
-      - name: Fix Android Gradle / AGP / Kotlin for Flutter stable
+      - name: Fix Gradle wrapper / AGP
         working-directory: ${{ steps.proj.outputs.dir }}/android
         run: |
           if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
             sed -i 's#gradle-[0-9.]*-all.zip#gradle-8.14.3-all.zip#; s#gradle-[0-9.]*-bin.zip#gradle-8.14.3-bin.zip#' gradle/wrapper/gradle-wrapper.properties
-            grep -n "distributionUrl" gradle/wrapper/gradle-wrapper.properties || true
           fi
           if [ -f settings.gradle.kts ]; then
             sed -i 's#id("com.android.application") version "[0-9.]*"#id("com.android.application") version "8.11.1"#' settings.gradle.kts
             sed -i 's#id("org.jetbrains.kotlin.android") version "[0-9.]*"#id("org.jetbrains.kotlin.android") version "2.2.20"#' settings.gradle.kts
-            grep -nE 'com.android.application|kotlin.android' settings.gradle.kts || true
           fi
 
       - name: Flutter pub get
@@ -229,27 +128,20 @@ jobs:
 
       - name: Build arm64-v8a release APK
         working-directory: ${{ steps.proj.outputs.dir }}
-        run: |
-          flutter build apk --release --split-per-abi --target-platform android-arm64 --android-skip-build-dependency-validation
+        run: flutter build apk --release --split-per-abi --target-platform android-arm64 --android-skip-build-dependency-validation
 
-      - name: Verify and package APK
+      - name: Package APK
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
+          set -e
           APK_DIR=build/app/outputs/flutter-apk
           ls -lh "$APK_DIR" || true
           APK="$APK_DIR/app-arm64-v8a-release.apk"
-          if [ ! -f "$APK" ]; then
-            APK="$APK_DIR/app-release.apk"
-          fi
-          if [ ! -f "$APK" ]; then
-            echo "APK nahi mili"
-            find build -name "*.apk" 2>/dev/null || true
-            exit 1
-          fi
-          unzip -t "$APK" > /tmp/apk_test.txt 2>&1 || { cat /tmp/apk_test.txt; exit 1; }
+          [ -f "$APK" ] || APK="$APK_DIR/app-release.apk"
+          [ -f "$APK" ] || { find build -name "*.apk"; exit 1; }
+          unzip -t "$APK" >/dev/null
           cp "$APK" "$GITHUB_WORKSPACE/LudoRush.apk"
           ls -lh "$GITHUB_WORKSPACE/LudoRush.apk"
-          file "$GITHUB_WORKSPACE/LudoRush.apk"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -262,12 +154,7 @@ jobs:
         with:
           tag_name: v1.0.${{ github.run_number }}
           name: Ludo Rush APK v1.0.${{ github.run_number }}
-          body: |
-            arm64-v8a release (Ludo3).
-            Characters / SFX / UI baad me MT Manager se import:
-            `assets/flutter_assets/assets/characters/`
-            `assets/flutter_assets/assets/sfx/`
-            `assets/flutter_assets/assets/ui/`
+          body: arm64-v8a release. Import characters/sfx/ui via MT Manager after install.
           files: LudoRush.apk
           make_latest: true
         env:
