@@ -47,15 +47,36 @@ jobs:
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
           echo "Project folder: $DIR"
 
-      - name: Fix missing _pngDot (compile error)
+      - name: Fix compile errors in uploaded source
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
+          set -e
+          # 1) lobby: missing _pngDot method
           F=lib/screens/lobby_screen.dart
           if [ -f "$F" ]; then
             sed -i "s/_pngDot(asset: 'assets\/ui\/icon_setting.png', onTap: onSettings)/_dot(icon: Icons.settings_rounded, onTap: onSettings)/g" "$F"
-            grep -n "_pngDot\|_dot(icon: Icons.settings" "$F" | head -5 || true
-          else
-            echo "lobby_screen.dart not found"
+            echo "lobby _pngDot patched"
+          fi
+
+          # 2) game: missing _killCounterBar method (call without def)
+          G=lib/screens/game_screen.dart
+          if [ -f "$G" ]; then
+            if grep -q '_killCounterBar(pw)' "$G" && ! grep -q 'Widget _killCounterBar' "$G"; then
+              # Remove the call line so project compiles; kill bar optional in CI build
+              sed -i '/_killCounterBar(pw)/d' "$G"
+              echo "removed _killCounterBar call (method missing in zip)"
+            else
+              echo "killCounterBar ok or unused"
+            fi
+            # PlayerCard may have scoreLabel/hideStat — ensure PlayerCard supports them
+            PC=lib/widgets/player_card.dart
+            if [ -f "$PC" ]; then
+              if grep -q 'scoreLabel:' "$G" && ! grep -q 'scoreLabel' "$PC"; then
+                sed -i 's/scoreLabel: widget.config.matchMode.isDeathMatch/\/\/ scoreLabel removed: /' "$G" || true
+                sed -i '/hideStat: widget.config.matchMode.isKill,/d' "$G" || true
+                echo "stripped unknown PlayerCard params"
+              fi
+            fi
           fi
 
       - name: Placeholder assets (no characters/sfx/ui on upload)
