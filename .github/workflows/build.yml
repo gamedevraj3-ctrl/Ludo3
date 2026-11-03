@@ -27,82 +27,63 @@ jobs:
       - name: Extract source zip
         run: |
           set -e
-          Z=$(find . -maxdepth 2 -name "*.zip" | head -n 1)
-          if [ -n "$Z" ] && [ ! -f pubspec.yaml ]; then
+          Z=$(find . -maxdepth 2 -type f -name "*.zip" | head -n 1)
+          if [ -n "$Z" ]; then
             echo "Extracting $Z ..."
+            rm -rf src_extracted
+            mkdir -p src_extracted
             unzip -q -o "$Z" -d src_extracted
+            # If zip root has a single folder, flatten is handled by find pubspec later
+            find src_extracted -maxdepth 3 -type f | head -40
+          else
+            echo "No zip found — using repo root as project"
           fi
 
       - name: Find Flutter project folder
         id: proj
         run: |
           set -e
-          P=$(find . -maxdepth 4 -name pubspec.yaml -not -path "*/.*" | head -n 1)
+          P=$(find . -maxdepth 5 -name pubspec.yaml -not -path "*/.*" | head -n 1)
           if [ -z "$P" ]; then
             echo "pubspec.yaml missing"
-            find . -maxdepth 3 -type f | head -80
+            find . -maxdepth 4 -type f | head -80
             exit 1
           fi
           DIR=$(dirname "$P")
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
           echo "Project folder: $DIR"
 
-      - name: Fix compile errors in uploaded source
+      - name: Placeholder assets (characters / sfx / ui deleted for upload)
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
-          # 1) lobby: missing _pngDot method
-          F=lib/screens/lobby_screen.dart
-          if [ -f "$F" ]; then
-            sed -i "s/_pngDot(asset: 'assets\/ui\/icon_setting.png', onTap: onSettings)/_dot(icon: Icons.settings_rounded, onTap: onSettings)/g" "$F"
-            echo "lobby _pngDot patched"
-          fi
-
-          # 2) game: missing _killCounterBar method (call without def)
-          G=lib/screens/game_screen.dart
-          if [ -f "$G" ]; then
-            if grep -q '_killCounterBar(pw)' "$G" && ! grep -q 'Widget _killCounterBar' "$G"; then
-              # Remove the call line so project compiles; kill bar optional in CI build
-              sed -i '/_killCounterBar(pw)/d' "$G"
-              echo "removed _killCounterBar call (method missing in zip)"
-            else
-              echo "killCounterBar ok or unused"
-            fi
-            # PlayerCard may have scoreLabel/hideStat — ensure PlayerCard supports them
-            PC=lib/widgets/player_card.dart
-            if [ -f "$PC" ]; then
-              if grep -q 'scoreLabel:' "$G" && ! grep -q 'scoreLabel' "$PC"; then
-                sed -i 's/scoreLabel: widget.config.matchMode.isDeathMatch/\/\/ scoreLabel removed: /' "$G" || true
-                sed -i '/hideStat: widget.config.matchMode.isKill,/d' "$G" || true
-                echo "stripped unknown PlayerCard params"
-              fi
-            fi
-          fi
-
-      - name: Placeholder assets (no characters/sfx/ui on upload)
-        working-directory: ${{ steps.proj.outputs.dir }}
-        run: |
-          mkdir -p assets/characters assets/sfx assets/ui
+          mkdir -p assets/characters assets/sfx assets/ui/ff_profile
           python3 - <<'PY'
-          import os, struct, wave, zlib
+          import os, struct, zlib, wave
 
-          def wav(path, ms=80):
-              sr, n = 22050, max(1, int(22050 * ms / 1000))
+          def wav(path, ms=60):
+              sr = 22050
+              n = max(1, int(sr * ms / 1000))
               os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
               with wave.open(path, "w") as w:
-                  w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+                  w.setnchannels(1)
+                  w.setsampwidth(2)
+                  w.setframerate(sr)
                   w.writeframes(b"\x00\x00" * n)
 
-          def png(path, w=16, h=16):
+          def png(path, w=32, h=32):
               def chunk(tag, data):
                   return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
-              raw = b"".join(b"\x00" + (b"\x00\x00\x00\x00" * w) for _ in range(h))
+              # solid dark pixel RGBA
+              row = b"\x00" + (b"\x1a\x1d\x22\xff" * w)
+              raw = row * h
               ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
-              data = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+              data = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
               os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
               open(path, "wb").write(data)
 
           def jpg(path):
+              # 1x1 grey jpeg
               open(path, "wb").write(bytes.fromhex(
                   "ffd8ffe000104a46494600010100000100010000ffdb004300080606070605080707"
                   "070909080a0c140d0c0b0b0c1912130f141d1a1f1e1d1a1c1c20242e2720222c231c"
@@ -111,26 +92,67 @@ jobs:
                   "0000000000000000ffda0008010100003f007fffd9"
               ))
 
-          for n in ["cut","dice_roll","dice_six","extra_turn","forfeit","home","hop","lose","match_start","miss","no_move","tap","token_open","ui_click","win"]:
+          sfx = [
+              "cut","dice_roll","dice_six","extra_turn","forfeit","home","hop",
+              "lose","match_start","miss","no_move","tap","token_open","ui_click","win",
+          ]
+          for n in sfx:
               p = f"assets/sfx/{n}.wav"
               if not os.path.isfile(p) or os.path.getsize(p) < 44:
                   wav(p)
 
-          for n in ["booyah_logo.png","lobby_bg.png","rank_crest.png","garena_logo.png","icon_setting.png","icon_mail.png","icon_store.png","icon_close.png","profile_stats_bg.png"]:
+          ui = [
+              "booyah_logo.png","lobby_bg.png","rank_crest.png","garena_logo.png",
+              "icon_setting.png","icon_mail.png","icon_store.png","icon_close.png",
+              "profile_stats_bg.png","icon_hide.png",
+          ]
+          for n in ui:
               p = f"assets/ui/{n}"
               if not os.path.isfile(p):
-                  png(p)
+                  png(p, 64, 64)
 
           for n in ["ff_lobby_bg.jpg","ff_loading_bg.jpg","ff_login_bg.jpg","ff_hero_bg.jpg"]:
               p = f"assets/ui/{n}"
               if not os.path.isfile(p):
                   jpg(p)
 
-          if not any(f.endswith(".png") for f in os.listdir("assets/characters")):
-              png("assets/characters/Rin.png", 64, 128)
+          ff = [
+              "bar_currency.png","btn_chat.png","btn_profile_close.png","card_id.png",
+              "chip_brand.png","panel_ranked.png","tab_gallery_on.png","tab_overview.png",
+              "tab_role.png","tabs_menu_stack.png",
+          ]
+          for n in ff:
+              p = f"assets/ui/ff_profile/{n}"
+              if not os.path.isfile(p):
+                  png(p, 128, 48)
 
-          print("sfx", len(os.listdir("assets/sfx")), "ui", len(os.listdir("assets/ui")), "chars", len(os.listdir("assets/characters")))
+          # at least one character so AssetImage paths resolve if referenced
+          chars = os.listdir("assets/characters") if os.path.isdir("assets/characters") else []
+          if not any(f.lower().endswith(".png") for f in chars):
+              png("assets/characters/Rin.png", 128, 256)
+
+          print("sfx", len(os.listdir("assets/sfx")),
+                "ui", len(os.listdir("assets/ui")),
+                "ff_profile", len(os.listdir("assets/ui/ff_profile")),
+                "chars", len(os.listdir("assets/characters")))
           PY
+
+      - name: Soft-patch known compile issues
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          set -e
+          F=lib/screens/lobby_screen.dart
+          if [ -f "$F" ] && grep -q "_pngDot" "$F" && ! grep -q "Widget _pngDot" "$F"; then
+            sed -i "s/_pngDot(asset: 'assets\/ui\/icon_setting.png', onTap: onSettings)/_dot(icon: Icons.settings_rounded, onTap: onSettings)/g" "$F" || true
+            echo "lobby _pngDot patched"
+          fi
+          G=lib/screens/game_screen.dart
+          if [ -f "$G" ]; then
+            if grep -q '_killCounterBar(pw)' "$G" && ! grep -q 'Widget _killCounterBar' "$G"; then
+              sed -i '/_killCounterBar(pw)/d' "$G" || true
+              echo "removed missing _killCounterBar call"
+            fi
+          fi
 
       - name: Fix Gradle wrapper / AGP
         working-directory: ${{ steps.proj.outputs.dir }}/android
@@ -175,7 +197,9 @@ jobs:
         with:
           tag_name: v1.0.${{ github.run_number }}
           name: Ludo Rush APK v1.0.${{ github.run_number }}
-          body: arm64-v8a release. Import characters/sfx/ui via MT Manager after install.
+          body: |
+            arm64-v8a release (assets stripped in repo).
+            After install, import real characters / sfx / ui via MT Manager if needed.
           files: LudoRush.apk
           make_latest: true
         env:
