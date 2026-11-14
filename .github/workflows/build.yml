@@ -53,7 +53,7 @@ jobs:
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
           echo "Project folder: $DIR"
 
-      - name: Placeholder assets (characters / sfx / ui deleted for upload)
+      - name: Placeholder assets
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
@@ -88,61 +88,30 @@ jobs:
                   "0000000000000000ffda0008010100003f007fffd9"
               ))
 
-          sfx = [
-              "cut","dice_roll","dice_six","extra_turn","forfeit","home","hop",
-              "lose","match_start","miss","no_move","tap","token_open","ui_click","win",
-          ]
-          for n in sfx:
+          for n in ["cut","dice_roll","dice_six","extra_turn","forfeit","home","hop","lose","match_start","miss","no_move","tap","token_open","ui_click","win"]:
               p = f"assets/sfx/{n}.wav"
               if not os.path.isfile(p) or os.path.getsize(p) < 44:
                   wav(p)
-
-          ui = [
-              "booyah_logo.png","lobby_bg.png","rank_crest.png","garena_logo.png",
-              "icon_setting.png","icon_mail.png","icon_store.png","icon_close.png",
-              "profile_stats_bg.png","icon_hide.png",
-          ]
-          for n in ui:
+          for n in ["booyah_logo.png","lobby_bg.png","rank_crest.png","garena_logo.png","icon_setting.png","icon_mail.png","icon_store.png","icon_close.png","profile_stats_bg.png","icon_hide.png"]:
               p = f"assets/ui/{n}"
-              if not os.path.isfile(p):
-                  png(p, 64, 64)
-
+              if not os.path.isfile(p): png(p, 64, 64)
           for n in ["ff_lobby_bg.jpg","ff_loading_bg.jpg","ff_login_bg.jpg","ff_hero_bg.jpg"]:
               p = f"assets/ui/{n}"
-              if not os.path.isfile(p):
-                  jpg(p)
-
+              if not os.path.isfile(p): jpg(p)
           for n in ["dice_faces.png","dice_spritesheet.png"]:
               p = f"assets/ui/dice/{n}"
-              if not os.path.isfile(p):
-                  png(p, 96, 64)
-
-          ff = [
-              "bar_currency.png","btn_chat.png","btn_profile_close.png","card_id.png",
-              "chip_brand.png","panel_ranked.png","tab_gallery_on.png","tab_overview.png",
-              "tab_role.png","tabs_menu_stack.png","tab_history.png","tab_honor_score.png",
-              "tab_recordings.png","tab_weapon.png","tab_wishlist.png",
-          ]
-          for n in ff:
+              if not os.path.isfile(p): png(p, 96, 64)
+          for n in ["bar_currency.png","btn_chat.png","btn_profile_close.png","card_id.png","chip_brand.png","panel_ranked.png","tab_gallery_on.png","tab_overview.png","tab_role.png","tabs_menu_stack.png","tab_history.png","tab_honor_score.png","tab_recordings.png","tab_weapon.png","tab_wishlist.png"]:
               p = f"assets/ui/ff_profile/{n}"
-              if not os.path.isfile(p):
-                  png(p, 128, 48)
-
-          for n in ["profile_reference.png","currency_reference.png","btn_start.png",
-                    "btn_store.png","btn_missions.png","btn_events.png","btn_luck_royale.png",
-                    "btn_booyah_pass.png","panel_cs_ranked.png","promo_banner.png"]:
+              if not os.path.isfile(p): png(p, 128, 48)
+          for n in ["profile_reference.png","currency_reference.png","btn_start.png","btn_store.png","btn_missions.png","btn_events.png","btn_luck_royale.png","btn_booyah_pass.png","panel_cs_ranked.png","promo_banner.png"]:
               p = f"assets/ui/ff_lobby/{n}"
-              if not os.path.isfile(p):
-                  png(p, 128, 64)
-
+              if not os.path.isfile(p): png(p, 128, 64)
           p = "assets/ui/ff_character/vault_character_close.png"
-          if not os.path.isfile(p):
-              png(p, 64, 64)
-
+          if not os.path.isfile(p): png(p, 64, 64)
           chars = os.listdir("assets/characters") if os.path.isdir("assets/characters") else []
           if not any(f.lower().endswith(".png") for f in chars):
               png("assets/characters/Rin.png", 128, 256)
-
           print("placeholders ready")
           PY
 
@@ -153,60 +122,32 @@ jobs:
           F=lib/screens/lobby_screen.dart
           if [ -f "$F" ] && grep -q "_pngDot" "$F" && ! grep -q "Widget _pngDot" "$F"; then
             sed -i "s/_pngDot(asset: 'assets\/ui\/icon_setting.png', onTap: onSettings)/_dot(icon: Icons.settings_rounded, onTap: onSettings)/g" "$F" || true
-            echo "lobby _pngDot patched"
           fi
           G=lib/screens/game_screen.dart
-          if [ -f "$G" ]; then
-            if grep -q '_killCounterBar(pw)' "$G" && ! grep -q 'Widget _killCounterBar' "$G"; then
-              sed -i '/_killCounterBar(pw)/d' "$G" || true
-              echo "removed missing _killCounterBar call"
-            fi
+          if [ -f "$G" ] && grep -q '_killCounterBar(pw)' "$G" && ! grep -q 'Widget _killCounterBar' "$G"; then
+            sed -i '/_killCounterBar(pw)/d' "$G" || true
           fi
 
-      - name: Fix Android Gradle (AGP + remove evaluationDependsOn)
-        working-directory: ${{ steps.proj.outputs.dir }}/android
+      - name: Regenerate android platform (bypass broken gradle)
+        working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
-          # Root cause of ApplicationExtension.getDefaultConfig() on Flutter 3.50:
-          # subprojects { evaluationDependsOn(":app") } in build.gradle.kts
-          cat > build.gradle.kts <<'EOF'
-          allprojects {
-              repositories {
-                  google()
-                  mavenCentral()
-              }
-          }
-
-          val newBuildDir: Directory =
-              rootProject.layout.buildDirectory
-                  .dir("../../build")
-                  .get()
-          rootProject.layout.buildDirectory.value(newBuildDir)
-
-          subprojects {
-              val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
-              project.layout.buildDirectory.value(newSubprojectBuildDir)
-          }
-
-          tasks.register<Delete>("clean") {
-              delete(rootProject.layout.buildDirectory)
-          }
-          EOF
-
-          if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
-            sed -i 's#distributionUrl=.*#distributionUrl=https\://services.gradle.org/distributions/gradle-8.12-all.zip#' gradle/wrapper/gradle-wrapper.properties
-            cat gradle/wrapper/gradle-wrapper.properties
+          # Wipe broken/outdated android folder and let current Flutter SDK
+          # generate a clean scaffold that matches this runner's AGP.
+          rm -rf android
+          flutter create . --platforms=android --project-name ludo_rush --org com.myapp
+          # Keep applicationId stable for installs
+          if [ -f android/app/build.gradle.kts ]; then
+            sed -i 's/namespace = .*/namespace = "com.myapp.mobile"/' android/app/build.gradle.kts || true
+            sed -i 's/applicationId = .*/applicationId = "com.myapp.mobile"/' android/app/build.gradle.kts || true
           fi
-
-          if [ -f settings.gradle.kts ]; then
-            # Pin AGP 8.7.3 (stable with Flutter 3.50) and Kotlin 2.1.0
-            sed -i 's#id("com.android.application") version "[^"]*"#id("com.android.application") version "8.7.3"#' settings.gradle.kts
-            sed -i 's#id("org.jetbrains.kotlin.android") version "[^"]*"#id("org.jetbrains.kotlin.android") version "2.1.0"#' settings.gradle.kts
-            grep -nE 'com.android.application|kotlin.android' settings.gradle.kts || true
+          if [ -f android/app/build.gradle ]; then
+            sed -i 's/applicationId .*/applicationId "com.myapp.mobile"/' android/app/build.gradle || true
+            sed -i 's/namespace .*/namespace "com.myapp.mobile"/' android/app/build.gradle || true
           fi
-
-          echo "--- build.gradle.kts ---"
-          cat build.gradle.kts
+          echo "--- android files ---"
+          ls -la android android/app || true
+          grep -n "com.android.application\|applicationId\|namespace" android/settings.gradle* android/app/build.gradle* 2>/dev/null | head -20 || true
 
       - name: Flutter pub get
         working-directory: ${{ steps.proj.outputs.dir }}
