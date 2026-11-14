@@ -33,8 +33,8 @@ jobs:
             rm -rf src_extracted
             mkdir -p src_extracted
             unzip -q -o "$Z" -d src_extracted
-            # If zip root has a single folder, flatten is handled by find pubspec later
             find src_extracted -maxdepth 3 -type f | head -40
+            ls -lh "$Z"
           else
             echo "No zip found — using repo root as project"
           fi
@@ -57,7 +57,7 @@ jobs:
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
-          mkdir -p assets/characters assets/sfx assets/ui/ff_profile
+          mkdir -p assets/characters assets/sfx assets/ui/ff_profile assets/ui/ff_lobby assets/ui/dice assets/ui/ff_character assets/ui/user_lobby_screenshots
           python3 - <<'PY'
           import os, struct, zlib, wave
 
@@ -66,15 +66,12 @@ jobs:
               n = max(1, int(sr * ms / 1000))
               os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
               with wave.open(path, "w") as w:
-                  w.setnchannels(1)
-                  w.setsampwidth(2)
-                  w.setframerate(sr)
+                  w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
                   w.writeframes(b"\x00\x00" * n)
 
           def png(path, w=32, h=32):
               def chunk(tag, data):
                   return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
-              # solid dark pixel RGBA
               row = b"\x00" + (b"\x1a\x1d\x22\xff" * w)
               raw = row * h
               ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
@@ -83,7 +80,6 @@ jobs:
               open(path, "wb").write(data)
 
           def jpg(path):
-              # 1x1 grey jpeg
               open(path, "wb").write(bytes.fromhex(
                   "ffd8ffe000104a46494600010100000100010000ffdb004300080606070605080707"
                   "070909080a0c140d0c0b0b0c1912130f141d1a1f1e1d1a1c1c20242e2720222c231c"
@@ -116,25 +112,38 @@ jobs:
               if not os.path.isfile(p):
                   jpg(p)
 
+          for n in ["dice_faces.png","dice_spritesheet.png"]:
+              p = f"assets/ui/dice/{n}"
+              if not os.path.isfile(p):
+                  png(p, 96, 64)
+
           ff = [
               "bar_currency.png","btn_chat.png","btn_profile_close.png","card_id.png",
               "chip_brand.png","panel_ranked.png","tab_gallery_on.png","tab_overview.png",
-              "tab_role.png","tabs_menu_stack.png",
+              "tab_role.png","tabs_menu_stack.png","tab_history.png","tab_honor_score.png",
+              "tab_recordings.png","tab_weapon.png","tab_wishlist.png",
           ]
           for n in ff:
               p = f"assets/ui/ff_profile/{n}"
               if not os.path.isfile(p):
                   png(p, 128, 48)
 
-          # at least one character so AssetImage paths resolve if referenced
+          for n in ["profile_reference.png","currency_reference.png","btn_start.png",
+                    "btn_store.png","btn_missions.png","btn_events.png","btn_luck_royale.png",
+                    "btn_booyah_pass.png","panel_cs_ranked.png","promo_banner.png"]:
+              p = f"assets/ui/ff_lobby/{n}"
+              if not os.path.isfile(p):
+                  png(p, 128, 64)
+
+          p = "assets/ui/ff_character/vault_character_close.png"
+          if not os.path.isfile(p):
+              png(p, 64, 64)
+
           chars = os.listdir("assets/characters") if os.path.isdir("assets/characters") else []
           if not any(f.lower().endswith(".png") for f in chars):
               png("assets/characters/Rin.png", 128, 256)
 
-          print("sfx", len(os.listdir("assets/sfx")),
-                "ui", len(os.listdir("assets/ui")),
-                "ff_profile", len(os.listdir("assets/ui/ff_profile")),
-                "chars", len(os.listdir("assets/characters")))
+          print("placeholders ready")
           PY
 
       - name: Soft-patch known compile issues
@@ -154,15 +163,23 @@ jobs:
             fi
           fi
 
-      - name: Fix Gradle wrapper / AGP
+      - name: Align Gradle wrapper only (keep project AGP)
         working-directory: ${{ steps.proj.outputs.dir }}/android
         run: |
+          set -e
+          # Do NOT force AGP 8.11 — that breaks Flutter's ApplicationExtension API.
+          # Project ships AGP 8.9.1 + Gradle 8.12; only normalize wrapper if missing/old.
           if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
-            sed -i 's#gradle-[0-9.]*-all.zip#gradle-8.14.3-all.zip#; s#gradle-[0-9.]*-bin.zip#gradle-8.14.3-bin.zip#' gradle/wrapper/gradle-wrapper.properties
+            if ! grep -q 'gradle-8.12' gradle/wrapper/gradle-wrapper.properties; then
+              sed -i 's#distributionUrl=.*#distributionUrl=https\://services.gradle.org/distributions/gradle-8.12-all.zip#' gradle/wrapper/gradle-wrapper.properties
+            fi
+            cat gradle/wrapper/gradle-wrapper.properties
           fi
           if [ -f settings.gradle.kts ]; then
-            sed -i 's#id("com.android.application") version "[0-9.]*"#id("com.android.application") version "8.11.1"#' settings.gradle.kts
-            sed -i 's#id("org.jetbrains.kotlin.android") version "[0-9.]*"#id("org.jetbrains.kotlin.android") version "2.2.20"#' settings.gradle.kts
+            # Ensure AGP stays in 8.9.x family compatible with Flutter stable
+            sed -i 's#id("com.android.application") version "8\.11[^"]*"#id("com.android.application") version "8.9.1"#' settings.gradle.kts || true
+            sed -i 's#id("com.android.application") version "8\.10[^"]*"#id("com.android.application") version "8.9.1"#' settings.gradle.kts || true
+            grep -n 'com.android.application' settings.gradle.kts || true
           fi
 
       - name: Flutter pub get
