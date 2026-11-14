@@ -90,8 +90,7 @@ jobs:
 
           for n in ["cut","dice_roll","dice_six","extra_turn","forfeit","home","hop","lose","match_start","miss","no_move","tap","token_open","ui_click","win"]:
               p = f"assets/sfx/{n}.wav"
-              if not os.path.isfile(p) or os.path.getsize(p) < 44:
-                  wav(p)
+              if not os.path.isfile(p) or os.path.getsize(p) < 44: wav(p)
           for n in ["booyah_logo.png","lobby_bg.png","rank_crest.png","garena_logo.png","icon_setting.png","icon_mail.png","icon_store.png","icon_close.png","profile_stats_bg.png","icon_hide.png"]:
               p = f"assets/ui/{n}"
               if not os.path.isfile(p): png(p, 64, 64)
@@ -100,13 +99,17 @@ jobs:
               if not os.path.isfile(p): jpg(p)
           for n in ["dice_faces.png","dice_spritesheet.png"]:
               p = f"assets/ui/dice/{n}"
-              if not os.path.isfile(p): png(p, 96, 64)
+              if not os.path.isfile(p): png(p, 192, 128)
           for n in ["bar_currency.png","btn_chat.png","btn_profile_close.png","card_id.png","chip_brand.png","panel_ranked.png","tab_gallery_on.png","tab_overview.png","tab_role.png","tabs_menu_stack.png","tab_history.png","tab_honor_score.png","tab_recordings.png","tab_weapon.png","tab_wishlist.png"]:
               p = f"assets/ui/ff_profile/{n}"
               if not os.path.isfile(p): png(p, 128, 48)
           for n in ["profile_reference.png","currency_reference.png","btn_start.png","btn_store.png","btn_missions.png","btn_events.png","btn_luck_royale.png","btn_booyah_pass.png","panel_cs_ranked.png","promo_banner.png"]:
               p = f"assets/ui/ff_lobby/{n}"
               if not os.path.isfile(p): png(p, 128, 64)
+          # lobby screenshot layers often referenced
+          for n in ["01_profile_player_banner_transparent.png","03_top_currency_and_icons.png","05_left_event_banner_top.png","06_top_event_reward_timer_panel.png","07_store_button.png","08_luck_royale_button.png","09_booyah_pass_button.png","10_missions_button.png","11_events_button.png","12_v_goodies_panel.png","13_friends_list_panel.png","14_friends_top_event_icons.png","15_right_event_banner.png","16_cs_ranked_mode_panel.png","17_start_button.png","18_bottom_vault_weapon_preset_lab_bar.png","20_chat_and_emote_buttons.png","lobby_screenshot_no_3d_characters.png"]:
+              p = f"assets/ui/user_lobby_screenshots/{n}"
+              if not os.path.isfile(p): png(p, 256, 128)
           p = "assets/ui/ff_character/vault_character_close.png"
           if not os.path.isfile(p): png(p, 64, 64)
           chars = os.listdir("assets/characters") if os.path.isdir("assets/characters") else []
@@ -114,6 +117,86 @@ jobs:
               png("assets/characters/Rin.png", 128, 256)
           print("placeholders ready")
           PY
+
+      - name: Crash-safe main + pubspec dice assets
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          set -e
+          # Ensure dice folder is in pubspec
+          if ! grep -q 'assets/ui/dice/' pubspec.yaml; then
+            sed -i '/assets\/ui\/user_lobby_screenshots\//a\    - assets/ui/dice/' pubspec.yaml || true
+          fi
+          mkdir -p lib/core
+          cat > lib/main.dart <<'EOF'
+          import 'package:flutter/foundation.dart';
+          import 'package:flutter/material.dart';
+          import 'package:flutter/services.dart';
+
+          import 'core/audio.dart';
+          import 'core/theme.dart';
+          import 'screens/garena_splash_screen.dart';
+
+          void main() {
+            WidgetsFlutterBinding.ensureInitialized();
+
+            FlutterError.onError = (FlutterErrorDetails details) {
+              FlutterError.presentError(details);
+              debugPrint('FlutterError: ${details.exceptionAsString()}');
+            };
+            PlatformDispatcher.instance.onError = (error, stack) {
+              debugPrint('Uncaught: $error\n$stack');
+              return true;
+            };
+            ErrorWidget.builder = (FlutterErrorDetails details) {
+              return Material(
+                color: const Color(0xFF0B0E14),
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text(
+                      'UI error\n${details.exceptionAsString()}',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.white70, fontSize: 12),
+                    ),
+                  ),
+                ),
+              );
+            };
+
+            try {
+              Sfx.instance.init();
+            } catch (_) {}
+
+            SystemChrome.setPreferredOrientations([
+              DeviceOrientation.landscapeLeft,
+              DeviceOrientation.landscapeRight,
+            ]);
+            SystemChrome.setSystemUIOverlayStyle(
+              const SystemUiOverlayStyle(
+                statusBarColor: Colors.transparent,
+                statusBarIconBrightness: Brightness.light,
+              ),
+            );
+            runApp(const LudoRushApp());
+          }
+
+          class LudoRushApp extends StatelessWidget {
+            const LudoRushApp({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                title: 'Ludo Rush',
+                debugShowCheckedModeBanner: false,
+                theme: buildAppTheme(),
+                home: const GarenaSplashScreen(),
+              );
+            }
+          }
+          EOF
+          # Soft-patch lobby Image.asset calls missing errorBuilder is hard; rely on ErrorWidget.
+          echo "main.dart crash-safe written"
+          grep -n "assets/ui/dice" pubspec.yaml || true
 
       - name: Soft-patch known compile issues
         working-directory: ${{ steps.proj.outputs.dir }}
@@ -132,30 +215,30 @@ jobs:
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
-          # Wipe broken/outdated android folder and let current Flutter SDK
-          # generate a clean scaffold that matches this runner's AGP.
           rm -rf android
           flutter create . --platforms=android --project-name ludo_rush --org com.myapp
-          # Keep applicationId stable for installs
           if [ -f android/app/build.gradle.kts ]; then
             sed -i 's/namespace = .*/namespace = "com.myapp.mobile"/' android/app/build.gradle.kts || true
             sed -i 's/applicationId = .*/applicationId = "com.myapp.mobile"/' android/app/build.gradle.kts || true
+            # Ensure minSdk not too high
+            sed -i 's/minSdk = .*/minSdk = 21/' android/app/build.gradle.kts || true
           fi
           if [ -f android/app/build.gradle ]; then
             sed -i 's/applicationId .*/applicationId "com.myapp.mobile"/' android/app/build.gradle || true
             sed -i 's/namespace .*/namespace "com.myapp.mobile"/' android/app/build.gradle || true
           fi
-          echo "--- android files ---"
-          ls -la android android/app || true
-          grep -n "com.android.application\|applicationId\|namespace" android/settings.gradle* android/app/build.gradle* 2>/dev/null | head -20 || true
+          ls -la android/app || true
 
       - name: Flutter pub get
         working-directory: ${{ steps.proj.outputs.dir }}
         run: flutter pub get
 
-      - name: Build arm64-v8a release APK
+      - name: Build universal release APK (arm64 + armv7 + x64)
         working-directory: ${{ steps.proj.outputs.dir }}
-        run: flutter build apk --release --split-per-abi --target-platform android-arm64 --android-skip-build-dependency-validation
+        run: |
+          set -e
+          # Universal APK so 32-bit phones don't instant-crash on missing native libs
+          flutter build apk --release --android-skip-build-dependency-validation
 
       - name: Package APK
         working-directory: ${{ steps.proj.outputs.dir }}
@@ -163,8 +246,8 @@ jobs:
           set -e
           APK_DIR=build/app/outputs/flutter-apk
           ls -lh "$APK_DIR" || true
-          APK="$APK_DIR/app-arm64-v8a-release.apk"
-          [ -f "$APK" ] || APK="$APK_DIR/app-release.apk"
+          APK="$APK_DIR/app-release.apk"
+          [ -f "$APK" ] || APK="$APK_DIR/app-arm64-v8a-release.apk"
           [ -f "$APK" ] || { find build -name "*.apk"; exit 1; }
           unzip -t "$APK" >/dev/null
           cp "$APK" "$GITHUB_WORKSPACE/LudoRush.apk"
@@ -182,8 +265,9 @@ jobs:
           tag_name: v1.0.${{ github.run_number }}
           name: Ludo Rush APK v1.0.${{ github.run_number }}
           body: |
-            arm64-v8a release (assets stripped in repo).
-            After install, import real characters / sfx / ui via MT Manager if needed.
+            Universal release APK (arm64 + armeabi-v7a + x86_64).
+            Assets stripped in repo — placeholders auto-injected.
+            Import real characters / sfx / ui via MT Manager after install if needed.
           files: LudoRush.apk
           make_latest: true
         env:
