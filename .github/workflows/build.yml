@@ -163,24 +163,50 @@ jobs:
             fi
           fi
 
-      - name: Align Gradle wrapper only (keep project AGP)
+      - name: Fix Android Gradle (AGP + remove evaluationDependsOn)
         working-directory: ${{ steps.proj.outputs.dir }}/android
         run: |
           set -e
-          # Do NOT force AGP 8.11 — that breaks Flutter's ApplicationExtension API.
-          # Project ships AGP 8.9.1 + Gradle 8.12; only normalize wrapper if missing/old.
+          # Root cause of ApplicationExtension.getDefaultConfig() on Flutter 3.50:
+          # subprojects { evaluationDependsOn(":app") } in build.gradle.kts
+          cat > build.gradle.kts <<'EOF'
+          allprojects {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          val newBuildDir: Directory =
+              rootProject.layout.buildDirectory
+                  .dir("../../build")
+                  .get()
+          rootProject.layout.buildDirectory.value(newBuildDir)
+
+          subprojects {
+              val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
+              project.layout.buildDirectory.value(newSubprojectBuildDir)
+          }
+
+          tasks.register<Delete>("clean") {
+              delete(rootProject.layout.buildDirectory)
+          }
+          EOF
+
           if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
-            if ! grep -q 'gradle-8.12' gradle/wrapper/gradle-wrapper.properties; then
-              sed -i 's#distributionUrl=.*#distributionUrl=https\://services.gradle.org/distributions/gradle-8.12-all.zip#' gradle/wrapper/gradle-wrapper.properties
-            fi
+            sed -i 's#distributionUrl=.*#distributionUrl=https\://services.gradle.org/distributions/gradle-8.12-all.zip#' gradle/wrapper/gradle-wrapper.properties
             cat gradle/wrapper/gradle-wrapper.properties
           fi
+
           if [ -f settings.gradle.kts ]; then
-            # Ensure AGP stays in 8.9.x family compatible with Flutter stable
-            sed -i 's#id("com.android.application") version "8\.11[^"]*"#id("com.android.application") version "8.9.1"#' settings.gradle.kts || true
-            sed -i 's#id("com.android.application") version "8\.10[^"]*"#id("com.android.application") version "8.9.1"#' settings.gradle.kts || true
-            grep -n 'com.android.application' settings.gradle.kts || true
+            # Pin AGP 8.7.3 (stable with Flutter 3.50) and Kotlin 2.1.0
+            sed -i 's#id("com.android.application") version "[^"]*"#id("com.android.application") version "8.7.3"#' settings.gradle.kts
+            sed -i 's#id("org.jetbrains.kotlin.android") version "[^"]*"#id("org.jetbrains.kotlin.android") version "2.1.0"#' settings.gradle.kts
+            grep -nE 'com.android.application|kotlin.android' settings.gradle.kts || true
           fi
+
+          echo "--- build.gradle.kts ---"
+          cat build.gradle.kts
 
       - name: Flutter pub get
         working-directory: ${{ steps.proj.outputs.dir }}
