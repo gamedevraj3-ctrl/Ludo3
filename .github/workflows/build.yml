@@ -117,17 +117,15 @@ jobs:
           print("placeholders ready")
           PY
 
-      - name: Ensure pubspec has dice assets
+      - name: Ensure pubspec dice + SDK
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
           if ! grep -q 'assets/ui/dice/' pubspec.yaml; then
             sed -i '/assets\/ui\/user_lobby_screenshots\//a\    - assets/ui/dice/' pubspec.yaml || true
           fi
-          # Wider SDK for older toolchains
           sed -i 's/sdk: \^3\.[0-9.]*/sdk: ">=3.5.0 <4.0.0"/' pubspec.yaml || true
           sed -i 's/sdk: "\^3\.[0-9.]*"/sdk: ">=3.5.0 <4.0.0"/' pubspec.yaml || true
-          grep -A2 'environment:' pubspec.yaml || true
 
       - name: Soft-patch known compile issues
         working-directory: ${{ steps.proj.outputs.dir }}
@@ -142,78 +140,35 @@ jobs:
             sed -i '/_killCounterBar(pw)/d' "$G" || true
           fi
 
-      - name: Prepare Android (regenerate + arm64-only + stable AGP)
+      - name: Regenerate android with Flutter defaults (no AGP pin)
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
-          # Always regenerate android with the runner Flutter SDK so AGP matches.
+          # Match the last SUCCESSFUL run: let Flutter pick AGP/Kotlin/Gradle.
+          # Forcing AGP 8.6.0 caused getDefaultConfig() failure on Flutter 3.50.
           rm -rf android
           flutter create . --platforms=android --project-name ludo_rush --org com.myapp
 
-          # Force stable, known-good Android Gradle Plugin + Kotlin
-          if [ -f android/settings.gradle.kts ]; then
-            sed -i 's/id("com.android.application") version "[^"]*"/id("com.android.application") version "8.6.0"/' android/settings.gradle.kts
-            sed -i 's/id("org.jetbrains.kotlin.android") version "[^"]*"/id("org.jetbrains.kotlin.android") version "1.9.24"/' android/settings.gradle.kts
+          # Only light identity tweaks — do NOT rewrite build.gradle.kts wholesale.
+          if [ -f android/app/build.gradle.kts ]; then
+            sed -i 's/namespace = .*/namespace = "com.myapp.mobile"/' android/app/build.gradle.kts || true
+            sed -i 's/applicationId = .*/applicationId = "com.myapp.mobile"/' android/app/build.gradle.kts || true
+            # minSdk: only replace if a numeric minSdk line exists
+            sed -i 's/minSdk = .*/minSdk = 21/' android/app/build.gradle.kts || true
+          fi
+          if [ -f android/app/build.gradle ]; then
+            sed -i 's/applicationId .*/applicationId "com.myapp.mobile"/' android/app/build.gradle || true
+            sed -i 's/namespace .*/namespace "com.myapp.mobile"/' android/app/build.gradle || true
           fi
 
-          if [ -f android/gradle/wrapper/gradle-wrapper.properties ]; then
-            sed -i 's#distributionUrl=.*#distributionUrl=https\://services.gradle.org/distributions/gradle-8.7-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
-          fi
-
-          # Write a clean app build.gradle.kts: arm64-v8a ONLY, minSdk 21, debug sign
-          cat > android/app/build.gradle.kts <<'EOF'
-          plugins {
-              id("com.android.application")
-              id("kotlin-android")
-              id("dev.flutter.flutter-gradle-plugin")
-          }
-
-          android {
-              namespace = "com.myapp.mobile"
-              compileSdk = flutter.compileSdkVersion
-              ndkVersion = flutter.ndkVersion
-
-              compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_11
-                  targetCompatibility = JavaVersion.VERSION_11
-              }
-
-              kotlinOptions {
-                  jvmTarget = JavaVersion.VERSION_11.toString()
-              }
-
-              defaultConfig {
-                  applicationId = "com.myapp.mobile"
-                  minSdk = 21
-                  targetSdk = flutter.targetSdkVersion
-                  versionCode = flutter.versionCode
-                  versionName = flutter.versionName
-                  multiDexEnabled = true
-                  ndk {
-                      abiFilters += listOf("arm64-v8a")
-                  }
-              }
-
-              buildTypes {
-                  release {
-                      signingConfig = signingConfigs.getByName("debug")
-                      isMinifyEnabled = false
-                      isShrinkResources = false
-                  }
-              }
-          }
-
-          flutter {
-              source = "../.."
-          }
-          EOF
-
-          # Remove evaluationDependsOn if present in root build file
+          # Drop evaluationDependsOn if Flutter template still has it
           if [ -f android/build.gradle.kts ]; then
             sed -i '/evaluationDependsOn/d' android/build.gradle.kts || true
           fi
+          if [ -f android/build.gradle ]; then
+            sed -i '/evaluationDependsOn/d' android/build.gradle || true
+          fi
 
-          # Landscape + label
           MAN=android/app/src/main/AndroidManifest.xml
           if [ -f "$MAN" ]; then
             sed -i 's/android:label="[^"]*"/android:label="Ludo Rush"/' "$MAN" || true
@@ -222,20 +177,20 @@ jobs:
             fi
           fi
 
-          echo "--- settings ---"
-          grep -n 'com.android.application\|kotlin.android' android/settings.gradle.kts || true
-          echo "--- app build ---"
-          cat android/app/build.gradle.kts
+          echo "--- settings AGP ---"
+          grep -n 'com.android.application\|kotlin' android/settings.gradle* 2>/dev/null | head -10 || true
+          echo "--- app gradle ---"
+          cat android/app/build.gradle.kts 2>/dev/null || cat android/app/build.gradle
 
       - name: Flutter pub get
         working-directory: ${{ steps.proj.outputs.dir }}
         run: flutter pub get
 
-      - name: Build arm64-v8a release APK only
+      - name: Build arm64-v8a release APK
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
-          flutter build apk --release --split-per-abi --target-platform android-arm64 --android-skip-build-dependency-validation
+          flutter build apk --release --split-per-abi --target-platform android-arm64
 
       - name: Package APK
         working-directory: ${{ steps.proj.outputs.dir }}
@@ -247,8 +202,7 @@ jobs:
           [ -f "$APK" ] || APK="$APK_DIR/app-release.apk"
           [ -f "$APK" ] || { find build -name "*.apk"; exit 1; }
           unzip -t "$APK" >/dev/null
-          # Confirm only arm64 native libs
-          unzip -l "$APK" | grep -E 'lib/|\.so' | head -30 || true
+          unzip -l "$APK" | grep -E 'lib/.*\.so' | head -20 || true
           cp "$APK" "$GITHUB_WORKSPACE/LudoRush-arm64.apk"
           ls -lh "$GITHUB_WORKSPACE/LudoRush-arm64.apk"
 
@@ -264,8 +218,7 @@ jobs:
           tag_name: v1.0.${{ github.run_number }}
           name: Ludo Rush arm64 APK v1.0.${{ github.run_number }}
           body: |
-            arm64-v8a only release APK.
-            Install on 64-bit Android phones (almost all modern devices).
+            arm64-v8a only release APK (Flutter default AGP).
           files: LudoRush-arm64.apk
           make_latest: true
         env:
